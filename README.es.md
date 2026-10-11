@@ -27,7 +27,7 @@ Renderizado nativo en macOS (AppKit): sin marco de ventana, sin fondo, sin estel
 
 **No necesitas Python** — va incluido dentro de la app, que está **certificada (notarized) por Apple**, así que se abre sin avisos de Gatekeeper.
 
-1. Descarga `ClaudePet.zip` desde [**Releases**](https://github.com/uygnoey/claude-pet/releases/latest) — en un **Mac Intel**, descarga `ClaudePet-universal.zip` (disponible desde v0.10)
+1. Descarga `ClaudePet.zip` desde [**Releases**](https://github.com/BrilliantTiger/claude-pet/releases/latest) — en un **Mac Intel**, descarga `ClaudePet-universal.zip` (disponible desde v0.10)
 2. Descomprime → mueve `ClaudePet.app` a tu carpeta de **Aplicaciones** → doble clic
 3. macOS 12+ (Apple Silicon; Intel con el zip universal desde v0.10)
 

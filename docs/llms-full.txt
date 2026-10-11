@@ -98,16 +98,16 @@ Claude Pet is open source under the MIT License (see LICENSE in the repository).
 
 Website: https://claude-pet.yeongyu.me/
 Website privacy: https://claude-pet.yeongyu.me/privacy.html
-Repository: https://github.com/uygnoey/claude-pet
-License: https://github.com/uygnoey/claude-pet/blob/main/LICENSE
-Published release: https://github.com/uygnoey/claude-pet/releases/tag/v1.1.0
-Latest downloads: https://github.com/uygnoey/claude-pet/releases/latest
-Apple Silicon DMG: https://github.com/uygnoey/claude-pet/releases/latest/download/ClaudePet.dmg
-Universal DMG (Intel and Apple Silicon): https://github.com/uygnoey/claude-pet/releases/latest/download/ClaudePet-universal.dmg
-Apple Silicon ZIP: https://github.com/uygnoey/claude-pet/releases/latest/download/ClaudePet.zip
-Universal ZIP: https://github.com/uygnoey/claude-pet/releases/latest/download/ClaudePet-universal.zip
-Windows installer: https://github.com/uygnoey/claude-pet/releases/latest/download/claude-pet-win-setup.exe
-Windows ZIP: https://github.com/uygnoey/claude-pet/releases/latest/download/claude-pet-win.zip
+Repository: https://github.com/BrilliantTiger/claude-pet
+License: https://github.com/BrilliantTiger/claude-pet/blob/main/LICENSE
+Published release: https://github.com/BrilliantTiger/claude-pet/releases/tag/v1.1.0
+Latest downloads: https://github.com/BrilliantTiger/claude-pet/releases/latest
+Apple Silicon DMG: https://github.com/BrilliantTiger/claude-pet/releases/latest/download/ClaudePet.dmg
+Universal DMG (Intel and Apple Silicon): https://github.com/BrilliantTiger/claude-pet/releases/latest/download/ClaudePet-universal.dmg
+Apple Silicon ZIP: https://github.com/BrilliantTiger/claude-pet/releases/latest/download/ClaudePet.zip
+Universal ZIP: https://github.com/BrilliantTiger/claude-pet/releases/latest/download/ClaudePet-universal.zip
+Windows installer: https://github.com/BrilliantTiger/claude-pet/releases/latest/download/claude-pet-win-setup.exe
+Windows ZIP: https://github.com/BrilliantTiger/claude-pet/releases/latest/download/claude-pet-win.zip
 
 ## 한국어 안내
 

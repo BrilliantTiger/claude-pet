@@ -27,7 +27,7 @@ macOS ネイティブ（AppKit）描画 — ウィンドウ枠・背景・残像
 
 **Python 不要** — アプリに同梱されており、**Apple の公証（notarize）済み**なので Gatekeeper の警告なしで開けます。
 
-1. [**Releases**](https://github.com/uygnoey/claude-pet/releases/latest) から `ClaudePet.zip` をダウンロード — **Intel Mac** の場合は `ClaudePet-universal.zip` を選んでください（v0.10 から提供）
+1. [**Releases**](https://github.com/BrilliantTiger/claude-pet/releases/latest) から `ClaudePet.zip` をダウンロード — **Intel Mac** の場合は `ClaudePet-universal.zip` を選んでください（v0.10 から提供）
 2. 展開 → `ClaudePet.app` を **アプリケーション** フォルダへ移動 → ダブルクリック
 3. macOS 12+（Apple Silicon; Intel は v0.10 から universal zip で対応）
 
