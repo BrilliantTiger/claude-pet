@@ -2588,7 +2588,8 @@ def _read_oauth_token(force=False):
             #    접근하려 합니다" 프롬프트가 뜰 수 있다. 자동 경로 — 401 강제 재조회 포함 —
             #    는 이 창을 띄우지 않는다: 8시간마다 오는 만료 순간에 CLI 가 한 번 비기만
             #    해도 모든 맥에 창이 뜨던 경로다.
-            if not tok and not c["declined"] and _keychain_prompt_allowed():
+            if (not tok and not c["declined"] and _keychain_prompt_allowed()
+                    and keychain_locked() is not True):   # 잠긴 키체인은 사용자가 눌러도 묻지 않는다
                 _keychain_prompt_until[0] = 0.0   # 한 번 누름에 한 번만 — 창을 닫는다
                 st, tok = _keychain_token_native_bounded()
                 src = "native"
@@ -3081,7 +3082,10 @@ def claude_token_present():
     타지 않는다(v0.16 재프롬프트 회귀). 새로고침은 fetch_exact_usage 를 먼저 부르므로 키체인
     사용자의 토큰은 그때 이미 캐시에 있다.
     """
-    return bool(_oauth_token_cache.get("tok")) or bool(_token_from_file())
+    if _oauth_token_cache.get("tok") or _token_from_file():
+        return True
+    # 키체인이 잠겨 있으면 읽지 못했을 뿐 로그인이 없는 게 아니다 — '로그인 필요'로 오판하지 않는다.
+    return keychain_locked() is True
 
 
 def _run_in_terminal(cmd):
@@ -3982,6 +3986,14 @@ def oauth_token_facts():
 
 
 _recovery_busy = threading.Lock()
+
+
+def recovery_spawn_allowed(action, locked):
+    """복구 판단이 'spawn' 이어도 키체인이 잠겨 있으면 띄우지 않는다.
+
+    띄우는 claude CLI 는 키체인 항목을 스스로 읽고 쓴다 — 잠긴 키체인에서는 그게 '키체인 암호'
+    창을 띄운다. 잠금이 풀리면 다음 주기가 다시 판단한다."""
+    return action == "spawn" and locked is not True
 
 
 def run_token_refresh(rec_holder, key="recovery"):
@@ -10556,8 +10568,10 @@ def run_gui():
                 expires_at=expires_at)
             state["recovery"] = rec
             _dbg("recovery: action", action, "attempts", rec["attempts"])
-            if action == "spawn":
+            if recovery_spawn_allowed(action, keychain_locked()):
                 run_token_refresh(state)
+            elif action == "spawn":
+                _dbg("recovery: spawn held; keychain locked")
             return action
         except Exception as e:
             _dbg("recovery: step failed", type(e).__name__)
