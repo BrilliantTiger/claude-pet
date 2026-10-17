@@ -979,5 +979,30 @@ class OAuthTokenCacheCase(unittest.TestCase):
             self.assertEqual(self.native.calls, 1, "one window must allow at most one native read")
             self.assertFalse(claude_pet._oauth_token_cache["declined"])
 
+    def test_native_reader_never_runs_while_locked_even_inside_the_window(self):
+        """Reviewer R1. A locked login keychain turns the native read into the "enter
+        your keychain password" dialog, so the window opened by a user gesture does not
+        lift the lock rule. Window open, `keychain_locked()` True, CLI empty, forced walk.
+
+        | keychain_locked() | window | d65bd9c (window only) | **new contract** |
+        | ----------------- | ------ | --------------------- | ---------------- |
+        | True              | open   | 1 ✗                   | **0**            |
+        | False             | open   | 1                     | **1**            |
+        | None (unknown)    | open   | 1                     | **1**            |
+
+        `declined` stays False in every row: a skipped read is not a refusal. The False
+        and None rows rule out "never native" (which would break the user's only route
+        on a Mac where the CLI read fails).
+        """
+        for locked, expected in ((True, 0), (False, 1), (None, 1)):
+            with self.subTest(locked=locked):
+                self.reset_state()
+                with self.platform("darwin"), \
+                        mock.patch.object(claude_pet, "keychain_locked", lambda v=locked: v, create=True):
+                    claude_pet.allow_keychain_prompt()
+                    claude_pet._read_oauth_token(force=True)
+                    self.assertEqual(self.native.calls, expected)
+                    self.assertFalse(claude_pet._oauth_token_cache["declined"])
+
 if __name__ == "__main__":
     unittest.main()

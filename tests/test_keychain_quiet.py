@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -581,6 +582,128 @@ class PromptWindowWiringCase(unittest.TestCase):
                         "neither _summary_click_work (before _recovery_step / "
                         "start_claude_login_background) nor _summary_click (before the "
                         "worker thread) calls allow_keychain_prompt()")
+
+
+
+# ───────────── R2 / R3 (Reviewer, round 2): a locked keychain reaches nothing ─────────────
+
+class LockedKeychainReachTests(unittest.TestCase):
+    """Reviewer additions R2 and R3, gated before the Developer implements them.
+
+    R2 — **no auto-recovery spawn while locked.** The spawned `claude` CLI reads and writes
+    the keychain itself, so a spawn while the login keychain is locked raises the unlock
+    dialog from a child we started. Seam (named by the Verifier, at the Developer's
+    offer): a pure module-level `recovery_spawn_allowed(action, locked) -> bool`, True
+    only for `action == "spawn"` with `locked` not True; `_recovery_step` (closure in
+    `run_gui`) calls `run_token_refresh` only under an `if` whose test calls
+    `recovery_spawn_allowed(action, keychain_locked())` — or tests `keychain_locked()`
+    directly — and nowhere else.
+
+    R3 — **a locked keychain never reads as "login needed".** `claude_token_present()` is
+    True when `keychain_locked()` is True and no token is cached (the token is unknown,
+    not absent), so `compute_onboard_state` gives no "login"/"install" state.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
+        gui = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_gui")
+        cls.step = next((n for n in gui.body
+                         if isinstance(n, ast.FunctionDef) and n.name == "_recovery_step"), None)
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="claudepet-kcq-r3-")
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        env = mock.patch.dict(os.environ, {"HOME": self.home})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CLAUDE_PET_FORCE_ONBOARD", None)
+        self.assertEqual(os.path.expanduser("~"), self.home)
+        c = claude_pet._oauth_token_cache
+        self.addCleanup(lambda snap=dict(c): (c.clear(), c.update(snap)))
+        c["tok"] = None
+        p = mock.patch.dict(claude_pet.RUNTIME, {"mode": "sub"})
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(claude_pet, "_find_claude_cli", lambda: "/synthetic/bin/claude")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_recovery_spawn_allowed_truth_table(self):
+        """| action           | locked | today          | always True ✗ | ignores lock ✗ | **design** |
+        | ---------------- | ------ | -------------- | ------------- | -------------- | ---------- |
+        | "spawn"          | False  | AttributeError | True          | True           | **True**   |
+        | "spawn"          | None   | AttributeError | True          | True           | **True**   |
+        | "spawn"          | True   | AttributeError | True ✗        | True ✗         | **False**  |
+        | "onboard_install"| False  | AttributeError | True ✗        | False          | **False**  |
+        | None             | False  | AttributeError | True ✗        | False          | **False**  |
+
+        The None row keeps a Mac whose status read fails recovering as before."""
+        fn = getattr(claude_pet, "recovery_spawn_allowed", None)
+        self.assertIsNotNone(fn, "claude_pet.recovery_spawn_allowed(action, locked) does not exist")
+        for action, locked, want in (("spawn", False, True), ("spawn", None, True),
+                                     ("spawn", True, False), ("onboard_install", False, False),
+                                     (None, False, False)):
+            with self.subTest(action=action, locked=locked):
+                self.assertIs(fn(action, locked), want)
+
+    def test_recovery_step_spawns_only_when_the_keychain_is_not_locked(self):
+        """AST pin of `_recovery_step` (closure in `run_gui`). Today the call is guarded by
+        `if action == "spawn":` alone, so a locked keychain still spawns the CLI.
+
+        | shape                                                     | **accepted** |
+        | --------------------------------------------------------- | ------------ |
+        | `if action == "spawn": run_token_refresh(state)` (today)  | no ✗         |
+        | `if recovery_spawn_allowed(action, keychain_locked()):`   | yes          |
+        | `if action == "spawn" and keychain_locked() is not True:` | yes          |
+        | a second, unguarded `run_token_refresh` call              | no ✗         |
+        """
+        self.assertIsNotNone(self.step, "run_gui has no nested def _recovery_step")
+        calls = [n for n in ast.walk(self.step) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "run_token_refresh"]
+        self.assertTrue(calls, "fixture: _recovery_step no longer calls run_token_refresh")
+
+        def guard_ok(test):
+            text = ast.unparse(test)
+            if re.search(r"\brecovery_spawn_allowed\(\s*action\s*,\s*keychain_locked\(\)\s*\)", text):
+                return True
+            return "keychain_locked()" in text
+
+        parents = {}
+        for n in ast.walk(self.step):
+            for ch in ast.iter_child_nodes(n):
+                parents[ch] = n
+        for call in calls:
+            node, guarded = call, False
+            while node in parents:
+                parent = parents[node]
+                if isinstance(parent, ast.If) and node in parent.body and guard_ok(parent.test):
+                    guarded = True
+                    break
+                node = parent
+            with self.subTest(line=call.lineno):
+                self.assertTrue(guarded, "run_token_refresh in _recovery_step is not guarded by "
+                                         "keychain_locked() — a locked keychain still spawns the CLI")
+
+    def test_locked_keychain_never_reads_as_login_needed(self):
+        """`claude_token_present()` and the onboarding state it feeds, no cached token, no
+        credentials file, the Claude CLI present, subscription mode.
+
+        | keychain_locked() | today: present / onboard | always True ✗ | **design**      |
+        | ----------------- | ------------------------ | ------------- | --------------- |
+        | True              | False / "login" ✗        | True / None   | **True / None** |
+        | False             | False / "login"          | True ✗ / None ✗ | **False / "login"** |
+        | None (unknown)    | False / "login"          | True ✗        | **False / "login"** |
+
+        The False and None rows keep a real logged-out user seeing the login hint.
+        """
+        for locked, want_present, want_state in ((True, True, None), (False, False, "login"),
+                                                 (None, False, "login")):
+            with self.subTest(locked=locked), \
+                    mock.patch.object(claude_pet, "keychain_locked", lambda v=locked: v, create=True):
+                present = claude_pet.claude_token_present()
+                self.assertEqual((present, claude_pet.compute_onboard_state(None, present)),
+                                 (want_present, want_state))
 
 
 if __name__ == "__main__":
