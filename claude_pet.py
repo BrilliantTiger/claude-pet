@@ -2247,6 +2247,81 @@ OAUTH_CACHE_SEC = 180   # 과호출 시 429 → 3분 캐시 필수
 # 존재하는 이유가 바로 과호출이라, 429 뒤에 더 빨리 다시 두드리면 안 된다.
 OAUTH_FAIL_RETRY_SEC = 60
 OAUTH_TOKEN_RETRY = 120   # 토큰 못 읽었을 때 재시도 간격(초)
+# 키체인을 조용히 다루기 위한 한도. 키체인 비밀값을 읽는 일 자체가 프롬프트의 기회다 — 로그인
+# 키체인이 잠겨 있거나, Claude Code 가 항목을 다시 쓰는 찰나이거나, 항목의 접근 목록이 바뀐
+# 순간이면 macOS 가 SecurityAgent 창을 띄운다. v1.1.0 까지는 만료 확인이 30초마다 비밀값을
+# 복호화했다(하루 2,880번). 이제 만료 시각은 마지막으로 읽은 값을 기억해 두고 쓴다.
+KEYCHAIN_FACTS_TTL = 1800          # 평소 만료 확인용 재조회 간격(초)
+KEYCHAIN_FACTS_MIN_INTERVAL = 60   # 만료가 가까울 때도 이보다 자주 읽지 않는다(초)
+KEYCHAIN_PROMPT_WINDOW_SEC = 120   # 사용자가 직접 누른 뒤 네이티브 프롬프트를 허용하는 창(초)
+_kSecUnlockStateStatus = 1
+_keychain_facts = {"blob": None, "t": 0.0, "t_try": 0.0}
+_keychain_prompt_until = [0.0]
+
+
+def keychain_locked():
+    """기본 키체인이 잠겨 있으면 True, 열려 있으면 False, 모르면 None.
+
+    SecKeychainGetStatus 는 상태만 묻는다 — 비밀값을 읽지 않고, 어떤 창도 띄우지 않는다
+    (실측: 4ms 이내, rc 0). 잠긴 키체인에 security 로 비밀값을 물으면 '키체인 암호' 창이
+    뜨므로, 비밀값을 읽는 모든 자동 경로가 이걸 먼저 본다."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        Sec = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+        Sec.SecKeychainGetStatus.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        Sec.SecKeychainGetStatus.restype = ctypes.c_int32
+        st = ctypes.c_uint32(0)
+        if Sec.SecKeychainGetStatus(None, ctypes.byref(st)) != 0:
+            return None
+        return not (st.value & _kSecUnlockStateStatus)
+    except Exception:
+        return None
+
+
+def allow_keychain_prompt():
+    """사용자가 직접 무언가를 눌렀다 — 잠깐 동안만 네이티브 키체인 프롬프트를 허용한다.
+
+    네이티브 읽기는 'ClaudePet 이 키체인에 접근하려 합니다' 창을 띄울 수 있는 유일한 경로다.
+    자동 경로(30초 새로고침, 401 강제 재조회)는 절대 그 창을 띄우지 않는다. 창은 사용자가
+    펫을 더블클릭해 새로 고치거나 필의 상태 문구를 눌렀을 때, 그 직후에만 뜰 수 있다."""
+    _keychain_prompt_until[0] = time.time() + KEYCHAIN_PROMPT_WINDOW_SEC
+
+
+def _keychain_prompt_allowed():
+    return time.time() < _keychain_prompt_until[0]
+
+
+def _reset_keychain_quiet_state():
+    """기억한 키체인 값과 프롬프트 창을 비운다(시험과 재시작 경계용)."""
+    _keychain_facts.update({"blob": None, "t": 0.0, "t_try": 0.0})
+    _keychain_prompt_until[0] = 0.0
+
+
+def _security_read_blob(timeout):
+    """security CLI 로 claudeAiOauth 객체를 읽는다. 키체인이 잠겨 있으면 아예 묻지 않는다.
+
+    성공하면 _keychain_facts 에 기억해 둔다 — 만료 확인(oauth_token_facts)이 30초마다
+    비밀값을 다시 복호화하지 않고 이 값을 쓴다."""
+    if keychain_locked() is True:
+        _dbg("keychain: locked; security read skipped")
+        return None
+    _keychain_facts["t_try"] = time.time()
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0 and r.stdout.strip():
+            obj = json.loads(r.stdout.strip()).get("claudeAiOauth")
+            if isinstance(obj, dict):
+                _keychain_facts["blob"] = obj
+                _keychain_facts["t"] = time.time()
+                return obj
+    except Exception:
+        pass
+    return None
 _oauth_cache = {"t": 0.0, "gauges": None, "ok_t": None}   # ok_t: 마지막 '성공' 응답 시각(급증 한도 학습 키)
 # 토큰은 성공 시 메모리에 캐시 — 재조회 시 macOS 허용 프롬프트가 반복되기 때문.
 # 만료(401)로 실패할 때만 force=True로 다시 읽는다.
@@ -2339,18 +2414,11 @@ def _token_from_file():
 def _token_from_cli():
     """security CLI로 키체인 읽기 — 이미 허용된 머신이면 조용히 성공.
     네이티브가 프롬프트조차 못 띄우고 실패하는 환경의 안전망이다.
-    앱이 멈추지 않도록 timeout을 둔다(프롬프트가 뜨면 CLI는 그대로 대기하므로)."""
-    try:
-        r = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=60)
-        if r.returncode == 0 and r.stdout.strip():
-            return (json.loads(r.stdout.strip())
-                    .get("claudeAiOauth") or {}).get("accessToken")
-    except Exception:
-        pass
-    return None
+    앱이 멈추지 않도록 timeout을 둔다(프롬프트가 뜨면 CLI는 그대로 대기하므로).
+    키체인이 잠겨 있으면 묻지 않는다(_security_read_blob)."""
+    obj = _security_read_blob(60)
+    tok = (obj or {}).get("accessToken")
+    return tok if isinstance(tok, str) and tok else None
 
 
 def _keychain_token_native():
@@ -2515,9 +2583,13 @@ def _read_oauth_token(force=False):
             #    뒤로 밀어내고 프롬프트가 필요한 경로를 먼저 타고 있었다.
             tok, src = _token_from_cli(), "cli"
             _dbg("read_oauth: cli tok?", bool(tok))
-            # 3) 네이티브 — 최후 수단. CLI가 막힌 환경에서만 쓴다. 여기서만
-            #    "ClaudePet이 키체인에 접근하려 합니다" 프롬프트가 뜰 수 있다.
-            if not tok and not c["declined"]:
+            # 3) 네이티브 — 최후 수단. CLI가 막힌 환경에서, 그리고 사용자가 방금 직접
+            #    누른 경우(allow_keychain_prompt)에만 쓴다. 여기서만 "ClaudePet이 키체인에
+            #    접근하려 합니다" 프롬프트가 뜰 수 있다. 자동 경로 — 401 강제 재조회 포함 —
+            #    는 이 창을 띄우지 않는다: 8시간마다 오는 만료 순간에 CLI 가 한 번 비기만
+            #    해도 모든 맥에 창이 뜨던 경로다.
+            if not tok and not c["declined"] and _keychain_prompt_allowed():
+                _keychain_prompt_until[0] = 0.0   # 한 번 누름에 한 번만 — 창을 닫는다
                 st, tok = _keychain_token_native_bounded()
                 src = "native"
                 _dbg("read_oauth: native st", st, "tok?", bool(tok))
@@ -3842,11 +3914,22 @@ def _run_refresh_job(argv, label, stem, timeout):
     return _drain_job_output(stem)
 
 
+def _blob_expiry_epoch(obj):
+    raw = (obj or {}).get("expiresAt")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return float(raw) / 1000.0
+    return None
+
+
 def _oauth_blob_noprompt():
     """저장소의 claudeAiOauth 객체(dict) 또는 None. **프롬프트가 뜰 수 있는 경로는 타지 않는다.**
 
-    파일 → security CLI 까지만이다. 네이티브 키체인 API 는 여기서 절대 쓰지 않는다 —
-    30초마다 불리는 자리에서 그 경로를 타면 v0.16 의 재프롬프트 회귀가 그대로 돌아온다.
+    파일 → (기억해 둔 키체인 값) → security CLI 순이다. 네이티브 키체인 API 는 여기서 절대
+    쓰지 않는다 — 30초마다 불리는 자리에서 그 경로를 타면 v0.16 의 재프롬프트 회귀가 그대로
+    돌아온다. security CLI 도 매번 부르지 않는다: 비밀값 복호화는 그 자체로 프롬프트의
+    기회라서, 마지막으로 읽은 값을 KEYCHAIN_FACTS_TTL 동안 쓰고, 만료가 가까울 때만
+    KEYCHAIN_FACTS_MIN_INTERVAL 간격으로 다시 읽는다. 키체인이 잠겨 있으면 기억한 값을 쓴다
+    (없으면 None) — 잠긴 동안 '로그인 정보 없음'으로 오판하지 않기 위해서다.
     """
     try:
         with open(_credentials_path(), encoding="utf-8") as f:
@@ -3857,18 +3940,23 @@ def _oauth_blob_noprompt():
         pass
     if sys.platform != "darwin":
         return None
-    try:
-        r = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=15)
-        if r.returncode == 0 and r.stdout.strip():
-            obj = json.loads(r.stdout.strip()).get("claudeAiOauth")
-            if isinstance(obj, dict):
-                return obj
-    except Exception:
-        pass
-    return None
+    kf = _keychain_facts
+    now = time.time()
+    if kf["blob"] is not None:
+        age = now - kf["t"]
+        exp = _blob_expiry_epoch(kf["blob"])
+        near = exp is not None and exp - now <= REFRESH_MARGIN_SEC
+        fresh_enough = age < KEYCHAIN_FACTS_TTL and not (near and age >= KEYCHAIN_FACTS_MIN_INTERVAL)
+        if fresh_enough:
+            return kf["blob"]
+    elif now - kf["t_try"] < KEYCHAIN_FACTS_MIN_INTERVAL:
+        return None                        # 방금 물어봤는데 없었다 — 30초마다 다시 두드리지 않는다
+    if keychain_locked() is True:
+        return kf["blob"]
+    obj = _security_read_blob(15)
+    if obj is None:
+        kf["blob"] = None   # 항목이 사라졌거나 못 읽었다 — 다음 시도는 t_try 간격을 지킨다
+    return obj
 
 
 def oauth_token_facts():
@@ -9133,6 +9221,7 @@ def run_gui():
                 return
             if event.clickCount() == 2:
                 set_override("jumping")
+                allow_keychain_prompt()        # 사용자가 직접 새로 고쳤다 — 이때만 키체인 창이 뜰 수 있다
                 _oauth_cache["t"] = 0.0        # 캐시 무효화 → 즉시 재조회
                 tk = state.get("ticker")
                 if tk is not None:
@@ -10506,6 +10595,7 @@ def run_gui():
         밖에 둔 사람들이다(nvm·fnm·volta·asdf, 커스텀 npm prefix). Finder 로 띄운
         LSUIElement 앱은 PATH 가 빈약해 shutil.which 가 그들을 못 본다.
         """
+        allow_keychain_prompt()   # 사용자가 필을 눌렀다 — 이 직후에만 키체인 창이 뜰 수 있다
         try:
             if act == "recover":
                 if _recovery_step(force=True) == "onboard_install":
