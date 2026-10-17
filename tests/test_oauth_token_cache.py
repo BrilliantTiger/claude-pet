@@ -234,12 +234,26 @@ class OAuthTokenCacheCase(unittest.TestCase):
         p = mock.patch.object(claude_pet.urllib.request, "urlopen", self.http)
         p.start()
         self.addCleanup(p.stop)
+        # Keychain quiet (section 8): the lock probe is always stubbed — no test reads
+        # the real keychain status — and the facts cache / prompt window are reset so
+        # an open window cannot leak between tests. `create=True` and `getattr` keep
+        # the unfixed module failing on behaviour rather than in setUp.
+        p = mock.patch.object(claude_pet, "keychain_locked", lambda: False, create=True)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(self._reset_quiet)
         self.reset_state()
 
     @staticmethod
     def _restore(d, snapshot):
         d.clear()
         d.update(snapshot)
+
+    @staticmethod
+    def _reset_quiet():
+        fn = getattr(claude_pet, "_reset_keychain_quiet_state", None)
+        if fn is not None:
+            fn()
 
     def reset_state(self):
         """Cold process state, without deleting keys the fixed code may rely on."""
@@ -257,6 +271,7 @@ class OAuthTokenCacheCase(unittest.TestCase):
         self.native.reset((claude_pet._SEC_ITEM_NOT_FOUND, None))
         self.http.reset()
         self.clock.set(T0)
+        self._reset_quiet()
         self.remove_credentials()
 
     def platform(self, name):
@@ -541,24 +556,42 @@ class OAuthTokenCacheCase(unittest.TestCase):
             self.clock.advance(claude_pet.OAUTH_TOKEN_RETRY + 1)
             self.assertEqual(self.read_name(), "tokB", "replacement token not read after the cooldown")
 
-    def test_401_forced_walk_reaches_native_once_and_respects_declined(self):
-        """Pin of the UNCHANGED v0.16 contract (GREEN before and after; it gates
-        nothing new and is here so the fix cannot regress it): the 401 forced walk
-        may reach the native reader — exactly once — unless the user declined.
+    def test_401_forced_walk_reaches_native_only_inside_prompt_window_and_respects_declined(self):
+        """Was `test_401_forced_walk_reaches_native_once_and_respects_declined`, the
+        pin of the v0.16 contract "the 401 forced walk may reach the native reader
+        once unless declined". Keychain quiet replaces that contract: the forced walk
+        is automatic (it runs every ~8 h at token expiry, with nobody at the screen),
+        so with the CLI empty it must **not** reach the native reader — the only path
+        that raises "ClaudePet wants to access the keychain". Only inside a window
+        opened by `allow_keychain_prompt()` (a user gesture; 120 s on
+        `claude_pet.time.time()`) may it, once, and `declined` still wins there.
 
-        | declined | native calls today | native calls after |
-        | -------- | ------------------ | ------------------ |
-        | True     | 0                  | 0                  |
-        | False    | 1                  | 1                  |
+        Fixture: cli-sourced tokA cached, CLI then empty, server answers 401.
+
+        | declined | window       | native calls (v0.16 contract) | today          | **new contract** |
+        | -------- | ------------ | ----------------------------- | -------------- | ---------------- |
+        | True     | none         | 0                             | 0              | **0**            |
+        | False    | none         | 1                             | 1 ✗            | **0**            |
+        | True     | open         | —                             | AttributeError | **0**            |
+        | False    | open         | —                             | AttributeError | **1**            |
+        | False    | open, lapsed | —                             | AttributeError | **0**            |
+
+        "open, lapsed": `allow_keychain_prompt()` at T0, the 401 at T0+121 (past the
+        120 s window) — rules out a window that never closes.
         """
-        for declined, expected_calls in ((True, 0), (False, 1)):
-            with self.subTest(declined=declined):
+        for declined, window, expected_calls in ((True, None, 0), (False, None, 0),
+                                                 (True, 0, 0), (False, 0, 1),
+                                                 (False, 121, 0)):
+            with self.subTest(declined=declined, window=window):
                 self.reset_state()
                 with self.platform("darwin"):
                     self.cli.value = TOK_A
                     self.assertEqual(self.read_name(), "tokA")
                     self.cli.value = None
                     claude_pet._oauth_token_cache["declined"] = declined
+                    if window is not None:
+                        claude_pet.allow_keychain_prompt()
+                        self.clock.advance(window)
                     self.http.default = http_error(401)
                     self.assertIsNone(claude_pet._fetch_oauth_usage())
                     self.assertTrue(claude_pet.OAUTH_STATUS["auth_error"])
@@ -810,85 +843,141 @@ class OAuthTokenCacheCase(unittest.TestCase):
             self.assertEqual(self.native.calls, 0, "recovery went through the native Keychain")
 
     def test_pending_native_does_not_block_cli_recovery(self):
-        """Mechanism P — pending native. Cycle 1 (T): tokA is rejected; the forced
-        walk finds the CLI empty (the item is mid-rewrite) and falls through to the
-        native reader, which reports *pending* (`(None, None)`: the prompt is up and
-        unanswered). That sets the OAUTH_TOKEN_RETRY cooldown, and the rejected
-        token must not survive it (the cache row, in its own subTest so the run
-        continues past it). A poll at T+30 s sends nothing. Cycle 2 (T+121 s: past
-        OAUTH_FAIL_RETRY_SEC and past OAUTH_TOKEN_RETRY): the CLI now has tokB, the
-        native stub is *still* pending, and the walk must take the CLI's answer
-        without consulting the native reader again → rows, `auth_error` False,
-        cache tokB, and the native stub called exactly once in the whole test
-        (cycle 1's forced walk — the v0.16 contract item 3′ pins). `declined` stays
-        False: pending is neither a failure nor a refusal.
+        """Mechanism P — pending native, restated for keychain quiet. Cycle 1 (T): tokA
+        is rejected; the forced walk finds the CLI empty (the item is mid-rewrite).
+        The native stub would report *pending* (`(None, None)`: prompt up, no answer).
+        Two scenarios, as subTests:
 
-        Truth table ("today" = pre-fix module; "native gate" = a walk that returns
-        pending while the native thread is alive, before it asks the CLI; "keep at
-        pending" = the fix without `_forget_oauth_token` in the pending branch;
-        "pending = declined" = the pending branch setting `declined`):
+        * **automatic** — no user gesture. The walk must not reach the native reader
+          at all (new contract); it sets the OAUTH_TOKEN_RETRY cooldown and forgets
+          the rejected token.
+        * **interactive** — `allow_keychain_prompt()` at T (the user double-clicked).
+          The walk may reach the native reader once, which reports pending.
 
-        | step                     | today  | keep dead tok, skip forced walk | forced walk re-reads file only | native gate | keep at pending | pending = declined | **design** |
-        | ------------------------ | ------ | ------------------------------- | ------------------------------ | ----------- | --------------- | ------------------ | ---------- |
-        | cycle 1 requests         | A      | A                               | A                              | A           | A               | A                  | **A**      |
-        | cycle 1 CLI consulted    | yes    | no ✗                            | no ✗                           | yes         | yes             | yes                | **yes**    |
-        | cycle 1 native calls     | 1      | 0 ✗                             | 0 ✗                            | 1           | 1               | 1                  | **1**      |
-        | cycle 1 cache            | A ✗    | A ✗                             | None                           | None        | A ✗             | None               | **None**   |
-        | T+30 new requests        | none   | none                            | none                           | none        | none            | none               | **none**   |
-        | T+121 rows               | None ✗ | None ✗                          | rows                           | None ✗      | rows            | rows               | **rows**   |
-        | T+121 new requests       | none   | A ✗                             | B                              | none        | A, B ✗          | B                  | **B**      |
-        | native calls, whole test | 1      | 0 ✗                             | 0 ✗                            | 2 ✗         | 1               | 1                  | **1**      |
-        | declined at the end      | False  | False                           | False                          | False       | False           | True ✗             | **False**  |
+        Both: a poll at T+30 s sends nothing; cycle 2 (T+121 s: past
+        OAUTH_FAIL_RETRY_SEC, OAUTH_TOKEN_RETRY and the 120 s window) the CLI has
+        tokB → rows, `auth_error` False, cache tokB, the native reader not entered
+        again, `declined` False (pending is neither a failure nor a refusal).
 
-        "Forced walk re-reads file only" recovers at T+121 through the ordinary
-        walk; the rows that separate it are cycle 1's CLI and native counts (the
-        forced walk must ask the CLI, and reach the native reader once when the CLI
-        has nothing). "Cooldown applies to force mode": unreachable, see the
-        previous test.
+        Truth table ("native gate" = a walk that returns pending while the native
+        thread is alive, before it asks the CLI; "keep at pending" = no
+        `_forget_oauth_token` in the pending branch; "pending = declined" = the
+        pending branch sets `declined`; "v0.16" = the previous design column):
 
-        Today: the cache row fails first (`'tokA' != 'None'`), then T+121 fails with
-        `rows` None — the 180 s failure cache, the dead token still cached and no
-        request sent. Polled at T+181 instead, the same fixture recovers on the
-        pre-fix module too (record, "ADDENDUM").
+        | step                         | today  | native gate | keep at pending | pending = declined | v0.16  | **new: automatic** | **new: interactive** |
+        | ---------------------------- | ------ | ----------- | --------------- | ------------------ | ------ | ------------------ | -------------------- |
+        | cycle 1 requests             | A      | A           | A               | A                  | A      | **A**              | **A**                |
+        | cycle 1 CLI consulted        | yes    | yes         | yes             | yes                | yes    | **yes**            | **yes**              |
+        | cycle 1 native calls         | 1 ✗(a) | 1           | 1               | 1                  | 1      | **0**              | **1**                |
+        | cycle 1 cache                | None   | None        | A ✗             | None               | None   | **None**           | **None**             |
+        | T+30 new requests            | none   | none        | none            | none               | none   | **none**           | **none**             |
+        | T+121 rows                   | rows   | None ✗      | rows            | rows               | rows   | **rows**           | **rows**             |
+        | T+121 new requests           | B      | none ✗      | A, B ✗          | B                  | B      | **B**              | **B**                |
+        | native calls, whole test     | 1 ✗(a) | 2 ✗         | 1               | 1                  | 1      | **0**              | **1**                |
+        | declined at the end          | False  | False       | False           | True ✗             | False  | **False**          | **False**            |
+
+        (a) automatic scenario; in the interactive one today fails earlier, on the
+        missing `allow_keychain_prompt`.
+        """
+        for scenario, native_expected in (("automatic", 0), ("interactive", 1)):
+            with self.subTest(scenario=scenario):
+                self.reset_state()
+                with self.platform("darwin"):
+                    self.cli.value = TOK_A
+                    self.assertEqual(self.read_name(), "tokA", "fixture: token not cached")
+                    self.assertEqual(self.cli.calls, 1)
+                    self.http.default = self.server_accepting(TOK_B)
+
+                    # cycle 1 — CLI transiently empty, native prompt would be pending
+                    self.cli.value = None
+                    self.native.value = (None, None)
+                    if scenario == "interactive":
+                        claude_pet.allow_keychain_prompt()
+                    self.assertIsNone(claude_pet.fetch_exact_usage(), "cycle 1 must end in estimate mode")
+                    self.assertEqual(self.sent_names(), ["tokA"], "no replacement token, so no retry request")
+                    self.assertEqual(self.cli.calls, 2, "the forced walk did not consult the security CLI")
+                    self.assertEqual(self.native.calls, native_expected,
+                                     "cycle 1 native calls (%s)" % scenario)
+                    self.assertTrue(claude_pet.OAUTH_STATUS["auth_error"])
+                    self.assertEqual(self.cached_name(), "None",
+                                     "the rejected token survived a forced walk that found no replacement")
+
+                    # one refresh tick later: the failure is cached, nothing is sent
+                    self.clock.set(T0 + 30)
+                    self.assertIsNone(claude_pet.fetch_exact_usage())
+                    self.assertEqual(self.http.requests, 1, "a poll 30 s after the failure sent a request")
+
+                    # cycle 2 — the CLI has the rotated token; the window (if any) has lapsed
+                    self.cli.value = TOK_B
+                    self.clock.set(T0 + 121)      # OAUTH_TOKEN_RETRY + 1, and past the 120 s window
+                    rows = claude_pet.fetch_exact_usage()
+                    self.assertTrue(rows, "pending native: the cycle after the cooldown did not recover exact mode")
+                    self.assertEqual(self.sent_names(1), ["tokB"],
+                                     "cycle 2 must send the CLI's fresh token and nothing else")
+                    self.assertFalse(claude_pet.OAUTH_STATUS["auth_error"])
+                    self.assertEqual(self.cached_name(), "tokB")
+                    self.assertEqual(self.cli.calls, 3, "cycle 2 did not consult the security CLI")
+                    self.assertEqual(self.native.calls, native_expected,
+                                     "the native reader was entered again by a later walk")
+                    self.assertFalse(claude_pet._oauth_token_cache["declined"],
+                                     "pending was recorded as a refusal")
+
+    # ───────────── 8. keychain quiet — the native reader is never automatic ─────────────
+
+    def test_cold_walk_never_reaches_native_automatically(self):
+        """The ordinary (non-forced) walk — first read at launch, and every retry
+        after OAUTH_TOKEN_RETRY — with no credentials file and the CLI empty. Today
+        it falls through to the native reader on every retry, which on a Mac whose
+        CLI read fails is a keychain dialog every 120 s.
+
+        | step                           | today | native only on force ✗ | **new contract** |
+        | ------------------------------ | ----- | ---------------------- | ---------------- |
+        | T0 read, native calls          | 1 ✗   | 0                      | **0**            |
+        | T0+121 retry, native calls     | 2 ✗   | 0                      | **0**            |
+        | CLI consulted, total           | 2     | 2                      | **2**            |
+        | forced walk (401) at T0+242    | 3 ✗   | 1 ✗                    | **0**            |
+
+        The last row puts a cached cli token in front of a 401 so the forced path is
+        exercised too; it is what separates "never automatic" from "only the
+        non-forced walk is quiet".
         """
         with self.platform("darwin"):
+            self.assertEqual(self.read_name(), "None")
+            self.assertEqual(self.native.calls, 0, "the launch walk reached the native Keychain")
+            self.clock.advance(claude_pet.OAUTH_TOKEN_RETRY + 1)
+            self.assertEqual(self.read_name(), "None")
+            self.assertEqual(self.cli.calls, 2, "the retry did not consult the security CLI")
+            self.assertEqual(self.native.calls, 0, "the retry walk reached the native Keychain")
+
+            self.clock.advance(claude_pet.OAUTH_TOKEN_RETRY + 1)
             self.cli.value = TOK_A
-            self.assertEqual(self.read_name(), "tokA", "fixture: token not cached")
-            self.assertEqual(self.cli.calls, 1)
-            self.http.default = self.server_accepting(TOK_B)
-
-            # cycle 1 — CLI transiently empty, native prompt pending
+            self.assertEqual(self.read_name(), "tokA")
             self.cli.value = None
-            self.native.value = (None, None)
-            self.assertIsNone(claude_pet.fetch_exact_usage(), "cycle 1 must end in estimate mode")
-            self.assertEqual(self.sent_names(), ["tokA"], "no replacement token, so no retry request")
-            self.assertEqual(self.cli.calls, 2, "the forced walk did not consult the security CLI")
-            self.assertEqual(self.native.calls, 1,
-                             "with the CLI empty the forced walk must reach the native reader once")
-            self.assertTrue(claude_pet.OAUTH_STATUS["auth_error"])
-            with self.subTest(step="cache after the pending forced walk"):
-                self.assertEqual(self.cached_name(), "None",
-                                 "the rejected token survived a forced walk that found no replacement")
+            self.http.default = http_error(401)
+            self.assertIsNone(claude_pet._fetch_oauth_usage())
+            self.assertEqual(self.native.calls, 0, "the 401 forced walk reached the native Keychain")
 
-            # one refresh tick later: the failure is cached, nothing is sent
-            self.clock.set(T0 + 30)
-            self.assertIsNone(claude_pet.fetch_exact_usage())
-            self.assertEqual(self.http.requests, 1, "a poll 30 s after the failure sent a request")
+    def test_prompt_window_allows_the_native_reader_once(self):
+        """Inside one `allow_keychain_prompt()` window, two forced walks with the CLI
+        empty and the native reader answering "item not found" (-25300: not a
+        refusal, so `declined` stays False and nothing else stops a second call).
 
-            # cycle 2 — the CLI has the rotated token; the native prompt is still pending
-            self.cli.value = TOK_B
-            self.clock.set(T0 + claude_pet.OAUTH_TOKEN_RETRY + 1)
-            rows = claude_pet.fetch_exact_usage()
-            self.assertTrue(rows, "pending native: the cycle after the cooldown did not recover exact mode")
-            self.assertEqual(self.sent_names(1), ["tokB"],
-                             "cycle 2 must send the CLI's fresh token and nothing else")
-            self.assertFalse(claude_pet.OAUTH_STATUS["auth_error"])
-            self.assertEqual(self.cached_name(), "tokB")
-            self.assertEqual(self.cli.calls, 3, "cycle 2 did not consult the security CLI")
-            self.assertEqual(self.native.calls, 1,
-                             "a pending native prompt blocked, or was re-entered by, the later walk")
-            self.assertFalse(claude_pet._oauth_token_cache["declined"], "pending was recorded as a refusal")
+        | rival                           | native calls | declined |
+        | ------------------------------- | ------------ | -------- |
+        | today                           | AttributeError ✗ | —    |
+        | window = "native allowed"       | 2 ✗          | False    |
+        | window consumed by a CLI answer | 1            | False    |
+        | **new contract**                | **1**        | **False**|
 
+        A user gesture buys at most one keychain dialog.
+        """
+        with self.platform("darwin"):
+            claude_pet.allow_keychain_prompt()
+            claude_pet._read_oauth_token(force=True)
+            self.clock.advance(10)
+            claude_pet._read_oauth_token(force=True)
+            self.assertEqual(self.native.calls, 1, "one window must allow at most one native read")
+            self.assertFalse(claude_pet._oauth_token_cache["declined"])
 
 if __name__ == "__main__":
     unittest.main()
