@@ -1,4 +1,54 @@
-"""Static release-preparation gates for v1.1.0.
+"""Static release-preparation gates for v1.1.1.
+
+Status as of 2026-10-17 (Verifier keychain-quiet-tests): v1.1.0 is published — annotated
+tag ``v1.1.0`` (0a02350f) on origin, pointing at cb4f98f; GitHub release published
+2026-10-06T00:25:29Z.  The tag's ``RELEASE_NOTES.md`` blob (a5f863c1) is *not* the v1.1.0
+release commit 4c088dc's (bff6752b): 71dc340 reworded the Codex-menu sentence before the
+tag was pushed, so — as for v0.26 and v1.0.0 — the tag, not the release commit, is what
+users received.  Running ``release.sh``'s ``gen_release_notes`` awk program
+(ver=``**v1.1.0**``) over the tag's file reproduces the live release body (``gh release
+view v1.1.0 --json body``, checked 2026-10-17) byte for byte, 3548 bytes (gh's output adds
+one trailing newline).  So everything from the ``**v1.1.0**`` heading to the end of
+``RELEASE_NOTES.md`` is frozen text and is pinned here byte for byte
+(``PUBLISHED_V110_AND_OLDER_SHA256``), beside the older pins.  The single unpublished
+section above it is ``**v1.1.1**``, and ``APP_VERSION`` is ``"1.1.1"`` — the bump the
+release commit d65bd9c carries.  ``StagedV110NotesFormatTests`` became
+``PublishedV110NotesContractTests`` with its method names unchanged; three assertions are
+re-scoped from ``APP_VERSION`` to the section's own heading (the numbers-are-the-version
+check, the heading check, and "Windows도 같은 1.1.0으로") — exactly the re-scope v1.0.1's
+class received.  Every other v1.1.0 claim was re-run against the v1.1.1 tree and still
+holds: the v1.1.1 change (keychain quiet, the repository move) touches the keychain reads,
+the update address and two click handlers, none of which a v1.1.0 claim is about.
+``StagedV111NotesFormatTests`` holds the v1.1.1 section to CLAUDE.md's release-note format
+and ties each bullet to the source:
+
+* "macOS에서 키체인이나 암호를 묻는 창이 반복해서 뜨던 문제를 고쳤습니다. 이제 키체인이 잠겨
+  있으면 앱이 로그인 정보를 읽지 않습니다" against the only ``security find-generic-password``
+  argv living in ``_security_read_blob``, which returns before it when ``keychain_locked()``
+  is True; ``_oauth_blob_noprompt`` serving the remembered blob for
+  ``KEYCHAIN_FACTS_TTL`` (1800) and re-reading near expiry no more often than
+  ``KEYCHAIN_FACTS_MIN_INTERVAL`` (60); the native reader's call guarded by
+  ``keychain_locked()`` (Reviewer R1); and ``_recovery_step``'s CLI spawn — the child reads
+  the keychain itself — guarded by it too (R2).
+* "“ClaudePet이 키체인에 접근하려 합니다” 창은 펫을 더블클릭해 새로 고치거나 필의 안내 문구를 누른
+  직후에만 뜰 수 있습니다. 업데이트만 받으면 되고, 창에서 거부를 눌렀던 분도 따로 할 일은
+  없습니다" against ``_keychain_token_native`` being reached only through the bounded
+  reader, whose one call sits behind ``_keychain_prompt_allowed()``; the window being opened
+  only by ``allow_keychain_prompt`` and that only from ``PetView.mouseUp_``'s double-click
+  branch and ``_summary_click_work``; and ``declined`` living only in the in-memory token
+  cache (never a config key, never named by a function that touches the config file).
+* "업데이트 확인과 다운로드는 프로젝트의 새 GitHub 주소(BrilliantTiger/claude-pet)에서
+  이뤄집니다. Windows도 같은 1.1.1로 나오며, 키체인이 없는 Windows는 주소 변경 외에 달라진
+  점이 없습니다" against ``GITHUB_REPO``, both platforms' latest-release URL built from it,
+  the installer's URLs, no old-owner address left in code; ``APP_VERSION`` and
+  ``windows/build_win.py``; and every new keychain path being darwin-only (
+  ``keychain_locked`` None off darwin, the port naming none of the new functions).
+
+The behavioural gates are tests/test_keychain_quiet.py, tests/test_oauth_token_cache.py,
+tests/test_repo_move.py and windows/tests/test_win_repo_move.py; this module only ties the
+prose to them.  Lineage: ``test_v1_1_0_release_contract.py`` → this file (``git mv``).
+
+The paragraphs below are the v1.1.0 module's docstring, kept as it was reviewed.
 
 Status as of 2026-10-05 (Verifier rel110-verify): v1.0.1 is published — annotated tag
 ``v1.0.1`` (dbbdd75d) on origin, pointing at e772ca4; GitHub release published
@@ -89,7 +139,7 @@ Lineage: ``test_v022_release_contract.py`` → ``test_v023_release_contract.py``
 ``test_v024_release_contract.py`` → ``test_v025_release_contract.py`` →
 ``test_v026_release_contract.py`` → ``test_v026_1_release_contract.py`` →
 ``test_v1_0_0_release_contract.py`` → ``test_v1_0_1_release_contract.py`` →
-this file; each
+``test_v1_1_0_release_contract.py`` → this file; each
 release renames the module with ``git mv`` and rewrites it for the version its release
 commit carries.  The name spells all three parts of the version: squeezed the way
 ``v026`` squeezed 0.26, 1.0.0 would read ``v100``, which looks like version 100.  A
@@ -307,6 +357,21 @@ PUBLISHED_V100_AND_OLDER_SHA256 = (
 # these trees, so the v1.0.1 section was appended above it and nothing below moved.
 PUBLISHED_V101_AND_OLDER_SHA256 = (
     "4d7f342b6532477c09005374f7378df7646f236c3f96015ad405a80913446d79"
+)
+# v1.1.0-and-older: from the ``**v1.1.0**`` heading through EOF, computed from the *tag*'s
+# tree (`git show v1.1.0:RELEASE_NOTES.md`; annotated tag 0a02350f -> cb4f98f, blob
+# a5f863c1, 27784 bytes, of which the suffix is 23404).  The release commit 4c088dc carried
+# a different blob (bff6752b): 71dc340 reworded the Codex-menu sentence before the tag was
+# pushed, so — as for v0.26 and v1.0.0 — the tag is what users received.  Independently
+# confirmed against the live GitHub release body (`gh release view v1.1.0 --json body`,
+# checked 2026-10-17; published 2026-10-06T00:25:29Z): running release.sh's
+# gen_release_notes awk program (ver=**v1.1.0**) over the tag's file reproduces the body's
+# 3548 bytes exactly (gh's --jq output adds one trailing newline).  Identical in the working
+# tree after the v1.1.1 section was staged above it (d65bd9c, 2026-10-17).  The v1.0.1
+# suffix is unchanged at 22567 bytes across these trees, so the v1.1.0 section was appended
+# above it and nothing below moved.
+PUBLISHED_V110_AND_OLDER_SHA256 = (
+    "538bd854d05730c5b16b78ad19da345ed4ed0f2ba9bd4cc882489f76ee5be8c5"
 )
 
 # The cadence the published v0.23 notes promise, and the Korean label they name.
@@ -752,25 +817,26 @@ def _guards(root: ast.AST, node: ast.AST) -> list[ast.AST]:
 
 
 class VersionAndPinContractTests(unittest.TestCase):
-    def test_v110_version_and_final_source_pins_propagate(self):
+    def test_v111_version_and_final_source_pins_propagate(self):
         problems: list[str] = []
 
         versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
-        if versions != ["1.1.0"]:
-            problems.append(f"APP_VERSION must be one literal '1.1.0', got {versions!r}")
+        if versions != ["1.1.1"]:
+            problems.append(f"APP_VERSION must be one literal '1.1.1', got {versions!r}")
 
         verifier_text = RELEASE_VERIFIER.read_text(encoding="utf-8")
-        if "--expect-version 1.1.0" not in verifier_text:
-            problems.append("verify_release_artifact.py usage must show --expect-version 1.1.0")
+        if "--expect-version 1.1.1" not in verifier_text:
+            problems.append("verify_release_artifact.py usage must show --expect-version 1.1.1")
         # A bare version-number substring check would false-positive here: "1.0" is a
         # literal prefix of "1.0.1" (as "0.26" was of "0.26.1", and "1.1" is of "1.1.0"), so a naive
         # `f"--expect-version {stale}" in text` would flag the very string this test just
         # required above. The negative lookahead excludes exactly that case — it only
         # fires on a *bare* stale version, never on it being a prefix of the current one.
-        # "1.1", "1.1.1", "1.2", "1.2.0" and "1.0.2" are the plausible wrong bumps; the
-        # rest are the versions before.
-        for stale in ("1.0.1", "1.0.0", "0.26.1", "0.26", "0.25", "0.24", "1.0",
-                      "1.1", "1.1.1", "1.2", "1.2.0", "1.0.2"):
+        # "1.1.2", "1.2", "1.2.0" and "1.1.10" are the plausible wrong bumps; the rest are
+        # the versions before ("1.1" is a bare prefix of "1.1.1", so the lookahead below
+        # keeps it from firing on the current version).
+        for stale in ("1.1.0", "1.0.1", "1.0.0", "0.26.1", "0.26", "0.25", "0.24", "1.0",
+                      "1.1", "1.1.2", "1.2", "1.2.0", "1.1.10"):
             if re.search(rf"--expect-version {re.escape(stale)}(?!\.\d)", verifier_text):
                 problems.append(
                     f"verify_release_artifact.py still advertises --expect-version {stale}"
@@ -889,13 +955,24 @@ class PublishedNotesImmutabilityTests(unittest.TestCase):
             "published v1.0.1-and-older bytes were rewritten or dropped",
         )
 
-    def test_v110_is_the_only_unpublished_heading_and_sits_directly_above_v101(self):
+    def test_published_v110_and_older_bytes_are_untouched(self):
+        raw = RELEASE_NOTES.read_bytes()
+        published_marker = b"**v1.1.0**"
+        self.assertEqual(raw.count(published_marker), 1, "published v1.1.0 heading changed")
+        published_suffix = raw[raw.index(published_marker) :]
+        self.assertEqual(
+            hashlib.sha256(published_suffix).hexdigest(),
+            PUBLISHED_V110_AND_OLDER_SHA256,
+            "published v1.1.0-and-older bytes were rewritten or dropped",
+        )
+
+    def test_v111_is_the_only_unpublished_heading_and_sits_directly_above_v110(self):
         """Rivals this heading-shape regex must not miss: a stale two-part-only pattern
         (``\\d+\\.\\d+``) silently fails to match a three-part heading like
         ``**v0.26.1**`` at all — a regex bug that would have made every assertion below
         vacuously pass against an empty ``headings`` list rather than catching a
         misplaced or duplicated heading. The pattern below allows an optional third
-        component for exactly this reason — and ``**v1.1.0**`` has one too."""
+        component for exactly this reason — and ``**v1.1.1**`` has one too."""
         text = RELEASE_NOTES.read_text(encoding="utf-8")
         changelog = "### 📝 변경 내역 / Changelog"
         self.assertEqual(text.count(changelog), 1)
@@ -904,11 +981,11 @@ class PublishedNotesImmutabilityTests(unittest.TestCase):
         self.assertTrue(headings, "changelog has no release heading")
         self.assertEqual(
             headings[:2],
-            ["1.1.0", "1.0.1"],
-            "the unpublished v1.1.0 section must sit directly above the published "
-            f"v1.0.1 heading, with nothing newer above it; got {headings[:2]!r}",
+            ["1.1.1", "1.1.0"],
+            "the unpublished v1.1.1 section must sit directly above the published "
+            f"v1.1.0 heading, with nothing newer above it; got {headings[:2]!r}",
         )
-        self.assertEqual(headings.count("1.1.0"), 1, "v1.1.0 heading must appear once")
+        self.assertEqual(headings.count("1.1.1"), 1, "v1.1.1 heading must appear once")
 
 
 class PublishedV023NotesContractTests(unittest.TestCase):
@@ -2946,12 +3023,22 @@ def _section_pairs(fn: ast.AST) -> set[tuple[str, str]]:
     return pairs
 
 
-class StagedV110NotesFormatTests(unittest.TestCase):
-    """The unpublished v1.1.0 section, held to CLAUDE.md's release-note format rule and to
-    the source it describes.
+class PublishedV110NotesContractTests(unittest.TestCase):
+    """The published v1.1.0 section: its bytes are frozen above (the *tag*'s wording), and
+    the source must still keep every promise it made.
 
-    The section is staged text until the tag is pushed, so correcting it is ordinary work;
-    the format gate only says what CLAUDE.md step 2 says: exactly three top-level bullets,
+    This is the v1.1.1 release's former ``StagedV110NotesFormatTests`` with its method
+    names unchanged — its status moved from staged to published when the ``v1.1.0`` tag and
+    GitHub release went out on 2026-10-06T00:25:29Z.  Three assertions are re-scoped from
+    ``APP_VERSION`` to the section's own heading, as v1.0.1's was: the numbers-are-the-
+    version check in the format test, ``test_v110_heading_and_version_are_the_bump`` (now:
+    the section is headed 1.1.0 and sits directly below the staged section), and "Windows도
+    같은 1.1.0으로" in the spikes test (the ``windows/build_win.py`` tie beside it is still a
+    property of ``APP_VERSION`` and unchanged).  The heading-equals-``APP_VERSION`` check
+    lives on in ``StagedV111NotesFormatTests``.  Every other assertion was re-run against
+    the v1.1.1 release tree (d65bd9c, 2026-10-17) and still holds.
+
+    (As staged:) the format gate only says what CLAUDE.md step 2 says: exactly three top-level bullets,
     no nesting, at most 450 normalized characters, 1-2 Korean sentences per bullet, and
     none of the forbidden token classes.  Every checkable claim in it is then tied to the
     source, one test per claim (see the module docstring for the list).  The v1.1.0 notes
@@ -3007,9 +3094,10 @@ class StagedV110NotesFormatTests(unittest.TestCase):
             if match:
                 problems.append(f"remove {label}: {match.group(0)!r}")
         # The only number a v1.1.0 bullet may carry is the version (commit 4c088dc: "숫자는
-        # 버전뿐") — anything else would need a §5 record behind it.
+        # 버전뿐") — anything else would need a §5 record behind it.  Published: the version
+        # is the section's own heading, no longer APP_VERSION.
         numbers = set(re.findall(r"\d+(?:\.\d+)*", self.body))
-        versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
+        versions = ["1.1.0"]
         if numbers - set(versions):
             problems.append(f"the notes carry numbers other than the version: "
                             f"{sorted(numbers - set(versions))!r}")
@@ -3021,14 +3109,12 @@ class StagedV110NotesFormatTests(unittest.TestCase):
                          "the way the earlier classes do")
 
     def test_v110_heading_and_version_are_the_bump(self):
-        """The staged heading is the version the release commit bumps to.
-
-        Rivals: a heading left at 1.0.1 or written as 1.1; ``APP_VERSION`` not bumped, or
-        bumped to something the heading does not say."""
-        versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
-        heading = _changelog_sections(self.text)[0][0]
-        self.assertEqual(versions, [heading],
-                         f"the staged heading is v{heading}; APP_VERSION is {versions!r}")
+        """Re-scoped on publication: the section is headed 1.1.0 and is the second section,
+        directly below the staged one (while staged this said heading == ``APP_VERSION``;
+        that check now lives in ``StagedV111NotesFormatTests``)."""
+        headings = [v for v, _ in _changelog_sections(self.text)]
+        self.assertEqual(headings[1:2], ["1.1.0"],
+                         f"v1.1.0 must be the newest published section; got {headings[:3]!r}")
 
     def test_v110_pill_shows_only_server_values_and_calibration_is_gone(self):
         """"필에는 이제 서버가 알려 준 사용량만 표시합니다. 로그로 계산한 추정치(≈)와 한도
@@ -3185,7 +3271,8 @@ class StagedV110NotesFormatTests(unittest.TestCase):
 
     def test_v110_codex_menu_sentence_names_who_actually_sees_the_items(self):
         """"Codex를 켰는데 설치나 로그인이 안 되어 있으면 우클릭 메뉴에 Codex 설치·로그인
-        항목이 나옵니다." (the wording at 4c088dc)
+        항목이 나옵니다." (the wording at 4c088dc; the tag carries 71dc340's restricted wording,
+        which is what this test now reads and what was published)
 
         The wiring: the refresh worker (macOS and the port) sets ``codex_onboard`` from
         ``compute_codex_onboard_state(provider_shown(…, "codex"), codex_mode, has_token,
@@ -3375,16 +3462,352 @@ class StagedV110NotesFormatTests(unittest.TestCase):
                 problems.append(f"{path.name}: Codex spikes must be merged into the stored spikes")
 
         named = re.search(r"Windows도\s*같은\s*(\d+(?:\.\d+)+)\s*으로", self.body)
-        versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
-        if not named or versions != [named.group(1)]:
+        # Published: the version the bullet names is the section's own heading.
+        if not named or named.group(1) != "1.1.0":
             problems.append(f"the notes say Windows ships {named and named.group(1)!r}; "
-                            f"APP_VERSION is {versions!r}")
+                            f"the section is v1.1.0")
         win_version = _module_defs(WIN_BUILD).get("app_version")
         if win_version is None or not ("claude_pet.py" in _code_strings([win_version])
                                        and any("APP_VERSION" in s
                                                for s in _code_strings([win_version]))):
             problems.append("windows/build_win.py's app_version must read APP_VERSION out of "
                             "claude_pet.py")
+        self.assertFalse(problems, "\n" + "\n".join(f"- {p}" for p in problems))
+
+
+def _enclosing_defs(tree: ast.AST) -> dict:
+    """id(node) -> name of the innermost function that lexically contains it."""
+    out: dict = {}
+
+    def visit(node, owner):
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else owner
+            out[id(child)] = inner
+            visit(child, inner)
+
+    visit(tree, "<module>")
+    return out
+
+
+def _call_sites(tree: ast.AST, name: str) -> list[tuple[str, ast.Call]]:
+    """(innermost enclosing function, call) for every bare ``name(...)`` call in tree."""
+    owners = _enclosing_defs(tree)
+    return [(owners.get(id(n), "<module>"), n) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name]
+
+
+class StagedV111NotesFormatTests(unittest.TestCase):
+    """The unpublished v1.1.1 section, held to CLAUDE.md's release-note format rule and to
+    the source it describes, one test per bullet (see the module docstring for the list).
+
+    The section is staged text until the tag is pushed, so correcting it is ordinary work.
+    The ties are about the named mechanisms; the behaviour is gated in
+    tests/test_keychain_quiet.py, tests/test_oauth_token_cache.py, tests/test_repo_move.py
+    and windows/tests/test_win_repo_move.py.
+    """
+
+    def setUp(self):
+        text = RELEASE_NOTES.read_text(encoding="utf-8")
+        self.text = text
+        self.visible = _notes_block(text, "**v1.1.1**", "**v1.1.0**")
+        self.top_level, self.nested, self.bullets = _bullet_shape(self.visible)
+        self.body = "\n".join(self.bullets)
+        self.tree = _module_tree(APP_SOURCE)
+        # From the same tree as the call sites, so _guards can walk between them.
+        self.defs = {n.name: n for n in self.tree.body
+                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    def _bullet(self, pattern: str) -> str:
+        matching = [b for b in self.bullets if re.search(pattern, b)]
+        self.assertEqual(len(matching), 1,
+                         f"expected exactly one v1.1.1 bullet matching {pattern!r}, "
+                         f"got {len(matching)}")
+        return matching[0]
+
+    def test_v111_notes_follow_the_three_bullet_450_character_format(self):
+        problems: list[str] = []
+        if len(self.top_level) != 3:
+            problems.append(f"v1.1.1 must have exactly 3 top-level bullets, got {len(self.top_level)}")
+        if self.nested:
+            problems.append("v1.1.1 must not contain nested bullets")
+        normalized_body = " ".join(self.visible.split())
+        if len(normalized_body) > 450:
+            problems.append(f"v1.1.1 Korean body is {len(normalized_body)} Unicode characters; max is 450")
+        for index, bullet in enumerate(self.bullets, 1):
+            if not re.search(r"[가-힣]", bullet):
+                problems.append(f"bullet {index} must be Korean")
+            count = len(_sentences(bullet))
+            if not 1 <= count <= 2:
+                problems.append(f"bullet {index} has {count} sentences; CLAUDE.md allows 1-2")
+        prose_for_forbidden_scan = self.body.replace("`", "")
+        for label, pattern in FORBIDDEN_NOTE_PATTERNS.items():
+            match = re.search(pattern, prose_for_forbidden_scan, re.I)
+            if match:
+                problems.append(f"remove {label}: {match.group(0)!r}")
+        # As for v1.1.0: the only number a bullet may carry is the version.
+        numbers = set(re.findall(r"\d+(?:\.\d+)*", self.body))
+        versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
+        if numbers - set(versions):
+            problems.append(f"the notes carry numbers other than the version: "
+                            f"{sorted(numbers - set(versions))!r}")
+        self.assertFalse(problems, "\n" + "\n".join(f"- {p}" for p in problems))
+
+    def test_v111_heading_and_version_are_the_bump(self):
+        """Rivals: a heading left at 1.1.0 or written as 1.1.10/1.2; ``APP_VERSION`` not
+        bumped, or bumped to something the heading does not say."""
+        versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
+        heading = _changelog_sections(self.text)[0][0]
+        self.assertEqual(versions, [heading],
+                         f"the staged heading is v{heading}; APP_VERSION is {versions!r}")
+        self.assertEqual(heading, "1.1.1")
+
+    def test_v111_keychain_dialogs_stop_and_a_locked_keychain_is_not_read(self):
+        """"macOS에서 키체인이나 암호를 묻는 창이 반복해서 뜨던 문제를 고쳤습니다. 이제 키체인이
+        잠겨 있으면 앱이 로그인 정보를 읽지 않습니다."
+
+        "반복해서 뜨던 문제를 고쳤습니다": the module's only ``security
+        find-generic-password`` argv is in ``_security_read_blob``; the 30 s path
+        (``oauth_token_facts`` → ``_oauth_blob_noprompt``) runs no subprocess itself and
+        re-reads only after ``KEYCHAIN_FACTS_TTL`` (1800) or, near expiry, no sooner than
+        ``KEYCHAIN_FACTS_MIN_INTERVAL`` (60).  "잠겨 있으면 … 읽지 않습니다", for every way the
+        app reaches the keychain: ``_security_read_blob`` returns before its subprocess when
+        ``keychain_locked()`` is True; the native reader's one call is guarded by
+        ``keychain_locked()`` (Reviewer R1 — at d65bd9c it is guarded only by the prompt
+        window, so a user gesture on a locked Mac still reads, and this fails); and
+        ``_recovery_step`` spawns the ``claude`` CLI — which reads the keychain itself — only
+        under a ``keychain_locked()`` guard (R2 — unguarded at d65bd9c, fails).
+
+        Rivals: a second ``security`` call site left behind (the v1.1.0 shape had two); the
+        cache keyed to the 30 s cycle; the lock check after the subprocess; the native read
+        or the CLI spawn left unguarded."""
+        problems: list[str] = []
+        bullet = self._bullet(r"반복해서\s*뜨던")
+        if not _has_all(bullet, (r"macOS", r"키체인이나\s*암호", r"고쳤습니다",
+                                 r"키체인이\s*잠겨\s*있으면", r"읽지\s*않습니다")):
+            problems.append("the bullet must say the repeated keychain/password dialogs are fixed "
+                            "and a locked keychain is not read")
+
+        owners = _enclosing_defs(self.tree)
+        argv_sites = sorted({owners.get(id(n), "<module>") for n in ast.walk(self.tree)
+                             if isinstance(n, ast.List) and any(
+                                 isinstance(e, ast.Constant) and e.value == "find-generic-password"
+                                 for e in n.elts)})
+        if argv_sites != ["_security_read_blob"]:
+            problems.append(f"the security find-generic-password argv must live only in "
+                            f"_security_read_blob; found in {argv_sites!r}")
+        read = self.defs.get("_security_read_blob")
+        if read is None:
+            problems.append("claude_pet.py must define _security_read_blob")
+        else:
+            runs = [n for n in ast.walk(read) if isinstance(n, ast.Call)
+                    and ast.unparse(n.func) == "subprocess.run"]
+            locks = [n for n in read.body if isinstance(n, ast.If)
+                     and "keychain_locked()" in ast.unparse(n.test)
+                     and any(isinstance(b, ast.Return) for b in n.body)]
+            if not runs or not locks or locks[0].lineno > min(r.lineno for r in runs):
+                problems.append("_security_read_blob must return before its subprocess when "
+                                "keychain_locked() is True")
+
+        blob = self.defs.get("_oauth_blob_noprompt")
+        names = _names(blob) if blob else set()
+        if blob is None or [n for n in ast.walk(blob) if isinstance(n, ast.Call)
+                            and ast.unparse(n.func) == "subprocess.run"]:
+            problems.append("_oauth_blob_noprompt must not run a subprocess itself")
+        if not {"KEYCHAIN_FACTS_TTL", "KEYCHAIN_FACTS_MIN_INTERVAL", "REFRESH_MARGIN_SEC",
+                "_keychain_facts", "_security_read_blob"} <= names:
+            problems.append("_oauth_blob_noprompt must serve the remembered blob for the TTL and "
+                            "re-read near expiry at the minimum interval")
+        for name, value in (("KEYCHAIN_FACTS_TTL", 1800), ("KEYCHAIN_FACTS_MIN_INTERVAL", 60)):
+            if _literal_assignments(APP_SOURCE, name) != [value]:
+                problems.append(f"{name} must be {value}")
+        facts = self.defs.get("oauth_token_facts")
+        if facts is None or not _calls_to(facts, "_oauth_blob_noprompt"):
+            problems.append("oauth_token_facts must read through _oauth_blob_noprompt")
+
+        native = _call_sites(self.tree, "_keychain_token_native_bounded")
+        for owner, call in native:
+            tests = " | ".join(ast.unparse(t) for t in _guards(self.defs.get(owner, self.tree), call))
+            if "keychain_locked()" not in tests:
+                problems.append(f"the native read in {owner} is not guarded by keychain_locked() "
+                                f"(guards: {tests or 'none'})")
+        if not native:
+            problems.append("fixture: no _keychain_token_native_bounded call found")
+
+        gui = self.defs.get("run_gui")
+        step = next((n for n in (gui.body if gui else [])
+                     if isinstance(n, ast.FunctionDef) and n.name == "_recovery_step"), None)
+        spawns = _calls_to(step, "run_token_refresh") if step else []
+        if not spawns:
+            problems.append("fixture: _recovery_step no longer calls run_token_refresh")
+        for call in spawns:
+            tests = " | ".join(ast.unparse(t) for t in _guards(step, call))
+            if "keychain_locked()" not in tests:
+                problems.append("_recovery_step spawns the claude CLI (which reads the keychain) "
+                                f"without a keychain_locked() guard (guards: {tests or 'none'})")
+        self.assertFalse(problems, "\n" + "\n".join(f"- {p}" for p in problems))
+
+    def test_v111_access_dialog_only_right_after_a_user_gesture(self):
+        """""ClaudePet이 키체인에 접근하려 합니다" 창은 펫을 더블클릭해 새로 고치거나 필의 안내
+        문구를 누른 직후에만 뜰 수 있습니다. 업데이트만 받으면 되고, 창에서 거부를 눌렀던 분도 따로
+        할 일은 없습니다."
+
+        The quote is macOS's own dialog, not a ``TR`` string; it is tied to the source's
+        description of the one path that raises it (``_keychain_token_native``'s
+        docstring).  "직후에만": ``_keychain_token_native`` is called only from the bounded
+        reader's worker; the bounded reader is called once, in ``_read_oauth_token``, under
+        ``_keychain_prompt_allowed()`` and ``declined``; ``_keychain_prompt_until`` is set to
+        anything but ``0.0`` only in ``allow_keychain_prompt``, whose callers are exactly
+        ``PetView.mouseUp_`` (the double-click refresh) and ``_summary_click_work`` (the
+        pill's status text); the window is ``KEYCHAIN_PROMPT_WINDOW_SEC`` = 120 s.  "거부를
+        눌렀던 분도 따로 할 일은 없습니다": ``declined`` starts False in the in-memory token
+        cache and is never a ``RUNTIME`` default, a config key, or named by a function that
+        touches the config file — a restart (the update) forgets it.
+
+        Rivals: a second native call site (e.g. in ``_revalidate_oauth_token``); the window
+        opened from a timer or the refresh worker; ``declined`` persisted to the config."""
+        problems: list[str] = []
+        bullet = self._bullet(r"접근하려\s*합니다")
+        quotes = re.findall(r'"([^"]+)"', self.body)
+        if quotes != ["ClaudePet이 키체인에 접근하려 합니다"]:
+            problems.append(f"the notes must quote exactly the access dialog; got {quotes!r}")
+        if not _has_all(bullet, (r"더블클릭", r"새로\s*고치", r"필의\s*안내\s*문구", r"직후에만",
+                                 r"업데이트만\s*받으면", r"거부를\s*눌렀던\s*분도\s*따로\s*할\s*일은\s*없")):
+            problems.append("the bullet must name the double-click refresh, the pill text, "
+                            "'직후에만' and that nobody has anything to do")
+        raw = self.defs.get("_keychain_token_native")
+        if raw is None or "ClaudePet이 키체인에 접근하려 합니다" not in (ast.get_docstring(raw) or ""):
+            problems.append("_keychain_token_native's docstring must name the dialog it raises")
+
+        raw_sites = sorted({o for o, _ in _call_sites(self.tree, "_keychain_token_native")})
+        if raw_sites != ["work"] or not any(
+                isinstance(n, ast.FunctionDef) and n.name == "work"
+                for n in ast.walk(self.defs.get("_keychain_token_native_bounded", self.tree))):
+            problems.append(f"_keychain_token_native must be called only by the bounded reader's "
+                            f"worker; called from {raw_sites!r}")
+        bounded = _call_sites(self.tree, "_keychain_token_native_bounded")
+        if [o for o, _ in bounded] != ["_read_oauth_token"]:
+            problems.append(f"the bounded native reader must be called once, from "
+                            f"_read_oauth_token; got {[o for o, _ in bounded]!r}")
+        else:
+            tests = " | ".join(ast.unparse(t) for t in _guards(self.defs["_read_oauth_token"],
+                                                                bounded[0][1]))
+            if "_keychain_prompt_allowed()" not in tests or "declined" not in tests:
+                problems.append(f"the native read must sit behind _keychain_prompt_allowed() and "
+                                f"declined; guards: {tests!r}")
+        allowed = self.defs.get("_keychain_prompt_allowed")
+        if allowed is None or "_keychain_prompt_until" not in _names(allowed):
+            problems.append("_keychain_prompt_allowed must read _keychain_prompt_until")
+        owners = _enclosing_defs(self.tree)
+        for n in ast.walk(self.tree):
+            if isinstance(n, ast.Assign) and any(
+                    isinstance(t, ast.Subscript) and ast.unparse(t.value) == "_keychain_prompt_until"
+                    for t in n.targets):
+                owner = owners.get(id(n), "<module>")
+                if owner != "allow_keychain_prompt" and not (
+                        isinstance(n.value, ast.Constant) and n.value.value == 0.0):
+                    problems.append(f"{owner} opens the prompt window")
+        openers = sorted({o for o, _ in _call_sites(self.tree, "allow_keychain_prompt")})
+        if openers != ["_summary_click_work", "mouseUp_"]:
+            problems.append(f"allow_keychain_prompt must be called only from mouseUp_ and "
+                            f"_summary_click_work; got {openers!r}")
+        if _literal_assignments(APP_SOURCE, "KEYCHAIN_PROMPT_WINDOW_SEC") != [120]:
+            problems.append("KEYCHAIN_PROMPT_WINDOW_SEC must be 120")
+
+        cache = _literal_assignments(APP_SOURCE, "_oauth_token_cache")
+        if len(cache) != 1 or cache[0].get("declined") is not False:
+            problems.append("_oauth_token_cache must start with declined False")
+        keys = _literal_assignments(APP_SOURCE, "_RUNTIME_CONFIG_KEYS")
+        if "declined" in _runtime_default_keys(APP_SOURCE) or (keys and "declined" in keys[0]):
+            problems.append("declined must not be a setting")
+        persisted = sorted(fn.name for fn in self.defs.values() if "CONFIG_PATH" in _names(fn)
+                           and ("_oauth_token_cache" in _names(fn) or "declined" in _code_strings([fn])))
+        if persisted:
+            problems.append(f"declined must not reach the config file: {persisted!r}")
+        self.assertFalse(problems, "\n" + "\n".join(f"- {p}" for p in problems))
+
+    def test_v111_new_address_and_windows_changes_only_the_address(self):
+        """"업데이트 확인과 다운로드는 프로젝트의 새 GitHub 주소(BrilliantTiger/claude-pet)에서
+        이뤄집니다. Windows도 같은 1.1.1로 나오며, 키체인이 없는 Windows는 주소 변경 외에 달라진
+        점이 없습니다."
+
+        "새 GitHub 주소": ``GITHUB_REPO`` is the address the bullet names; macOS's
+        ``check_github_update`` and the port's ``LATEST_RELEASE_URL`` both build the
+        latest-release URL from it; the download is the release's own
+        ``browser_download_url``; the installer's support/update URLs carry the new owner;
+        no code string names the old owner.  "Windows도 같은 1.1.1로": ``APP_VERSION`` and
+        ``windows/build_win.py``.  "주소 변경 외에 달라진 점이 없습니다": every keychain path
+        the release adds is darwin-only — ``keychain_locked`` returns None off darwin first
+        thing, ``_oauth_blob_noprompt`` returns before the remembered blob or a keychain read
+        off darwin, ``_read_oauth_token`` calls the CLI and native readers only under
+        ``sys.platform == 'darwin'`` — and the port names none of the new keychain functions.
+
+        Rivals: the constant moved but one URL still hard-codes the old owner; the port
+        building its own URL; a keychain check reaching Windows."""
+        problems: list[str] = []
+        bullet = self._bullet(r"GitHub\s*주소")
+        named = re.search(r"\(([\w.-]+/[\w.-]+)\)", bullet)
+        repo = _literal_assignments(APP_SOURCE, "GITHUB_REPO")
+        if repo != ["BrilliantTiger/claude-pet"] or not named or [named.group(1)] != repo:
+            problems.append(f"the bullet names {named and named.group(1)!r}; GITHUB_REPO is {repo!r}")
+        check = self.defs.get("check_github_update")
+        if check is None or "GITHUB_REPO" not in _names(check) or not any(
+                "https://api.github.com/repos/" in s for s in _code_strings([check])):
+            problems.append("check_github_update must build its URL from GITHUB_REPO")
+        try:
+            win_url = ast.unparse(_module_assignment(WIN_UPDATE, "LATEST_RELEASE_URL").value)
+        except AssertionError as exc:
+            win_url = str(exc)
+        if "cp.GITHUB_REPO" not in win_url or "api.github.com/repos/" not in win_url:
+            problems.append(f"the port's LATEST_RELEASE_URL must come from cp.GITHUB_REPO; got {win_url}")
+        select = self.defs.get("select_update_asset")
+        if select is None or "browser_download_url" not in _code_strings([select]):
+            problems.append("the download must be the release's browser_download_url")
+        iss = (REPO / "windows" / "installer.iss").read_text(encoding="utf-8")
+        if "https://github.com/BrilliantTiger/claude-pet" not in iss or "uygnoey" in iss:
+            problems.append("windows/installer.iss must point at the new address only")
+        for path in (APP_SOURCE, WIN_APP, WIN_UPDATE, WIN_BUILD):
+            old = sorted(s for s in _code_strings([_module_tree(path)]) if "uygnoey" in s)
+            if old:
+                problems.append(f"{path.name} still names the old owner: {old!r}")
+
+        win_named = re.search(r"Windows도\s*같은\s*(\d+(?:\.\d+)+)\s*로", self.body)
+        versions = _literal_assignments(APP_SOURCE, "APP_VERSION")
+        if not win_named or versions != [win_named.group(1)]:
+            problems.append(f"the notes say Windows ships {win_named and win_named.group(1)!r}; "
+                            f"APP_VERSION is {versions!r}")
+        win_version = _module_defs(WIN_BUILD).get("app_version")
+        if win_version is None or not any("APP_VERSION" in s for s in _code_strings([win_version])):
+            problems.append("windows/build_win.py's app_version must read APP_VERSION")
+
+        def first_is_platform_return(fn):
+            body = [b for b in fn.body if not (isinstance(b, ast.Expr)
+                                               and isinstance(b.value, ast.Constant))]
+            return bool(body) and isinstance(body[0], ast.If) \
+                and ast.unparse(body[0].test) == "sys.platform != 'darwin'" \
+                and isinstance(body[0].body[0], ast.Return)
+        locked = self.defs.get("keychain_locked")
+        if locked is None or not first_is_platform_return(locked):
+            problems.append("keychain_locked must return None off darwin before anything else")
+        blob = self.defs.get("_oauth_blob_noprompt")
+        if blob is not None:
+            gates = [n.lineno for n in ast.walk(blob) if isinstance(n, ast.If)
+                     and ast.unparse(n.test) == "sys.platform != 'darwin'"]
+            uses = [n.lineno for n in ast.walk(blob) if isinstance(n, ast.Name)
+                    and n.id in ("_keychain_facts", "_security_read_blob", "keychain_locked")]
+            if not gates or (uses and min(uses) < min(gates)):
+                problems.append("_oauth_blob_noprompt must return off darwin before any keychain use")
+        reader = self.defs.get("_read_oauth_token")
+        for name in ("_token_from_cli", "_keychain_token_native_bounded"):
+            for call in (_calls_to(reader, name) if reader else []):
+                if not any(ast.unparse(t) == "sys.platform == 'darwin'" for t in _guards(reader, call)):
+                    problems.append(f"_read_oauth_token calls {name} outside sys.platform == 'darwin'")
+        for path in (WIN_APP, WIN_UPDATE, WIN_BUILD):
+            named_new = {"keychain_locked", "allow_keychain_prompt", "_security_read_blob",
+                         "_keychain_prompt_allowed"} & ({n.attr for n in ast.walk(_module_tree(path))
+                                                         if isinstance(n, ast.Attribute)}
+                                                        | _names(_module_tree(path)))
+            if named_new:
+                problems.append(f"{path.name} names the macOS keychain functions {sorted(named_new)!r}")
         self.assertFalse(problems, "\n" + "\n".join(f"- {p}" for p in problems))
 
 
